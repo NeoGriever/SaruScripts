@@ -394,12 +394,16 @@ Use `try` and `catch` around work that can fail without ending the entire script
 
 ## Changelog
 
+### 1.0.3.3
+
+- Added dynamic `Plugin().IPC()` and `Plugin().Reflect()` integrations.
+- Changed target activation to restore Cammy camera collision and limit an overly distant camera zoom.
+- Changed GoldSaucerRunner so active Chocoholic races and GATE activities remain locked until their MGP payout.
+
 ### 1.0.3.2
 
 - Added root-level script configuration, map-aware movement, and the `mapChange` event.
 - Added optional Chocoholic controls and the GoldSaucerRunner Chocoholic mode.
-- Added dynamic `Plugin().IPC()` and `Plugin().Reflect()` integrations.
-- Changed target activation to restore Cammy camera collision and limit an overly distant camera zoom.
 - Added managed remote-script updates and update availability indicators.
 
 ### 1.0.3.1
