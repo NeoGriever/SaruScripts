@@ -196,7 +196,7 @@ target.Activate();
 
 `target.Activate()` interacts with the current target.
 
-Before an activation, Saru explicitly enables normal camera collision through Cammy when Cammy is loaded. This uses Cammy’s public loaded API. Scripts do not need to handle this separately.
+Before an activation, Saru explicitly restores normal camera collision when Cammy is loaded. It also brings an overly distant current camera zoom in to at most 6 yalms, without changing a nearer user-selected zoom. Scripts do not need to handle this separately.
 
 Use `target.At(baseId, radius)` to wait for a targetable object within a radius. It triggers the `reach` event once.
 
