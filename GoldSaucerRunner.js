@@ -132,36 +132,36 @@ class ChocoholicRacing {
   constructor(scheduler) {
     this.scheduler = scheduler;
     this.enabled = false;
-    this.deadzoneTimer = null;
     this.resumeTimer = null;
     this.notBefore = 0;
     this.transitionPending = false;
+    this.finishAfterPayout = null;
   }
   get deadzoneSeconds() { return Number(noChocoholicQueueMinutes) * 60; }
   clearTimers() {
-    clearTimeout(this.deadzoneTimer);
     clearTimeout(this.resumeTimer);
-    this.deadzoneTimer = this.resumeTimer = null;
+    this.resumeTimer = null;
   }
   setEnabled(value) {
     if (this.enabled === value) return;
     if (value) chocoholic.SetNumberOfRaces(1);
-    chocoholic.Toggle(value);
-    this.enabled = value;
-    console.log("[Saru] Chocoholic " + (value ? "enabled." : "disabled."));
+    const changed = chocoholic.Toggle(value);
+    this.enabled = value && changed;
+    if (changed) console.log("[Saru] Chocoholic " + (value ? "enabled." : "disabled."));
   }
   start() { this.evaluate(); }
   stop() {
     this.clearTimers();
     this.notBefore = 0;
     this.transitionPending = false;
+    this.finishAfterPayout = null;
     this.setEnabled(false);
   }
   pauseForGate() {
-    this.clearTimers();
-    this.notBefore = 0;
-    this.transitionPending = false;
-    this.setEnabled(false);
+    // A race already in progress must finish. Its MGP payout is the only
+    // normal GATE-flow signal that turns Chocoholic off.
+    clearTimeout(this.resumeTimer);
+    this.resumeTimer = null;
   }
   resumeAfter(delayMs, reason) {
     this.notBefore = Math.max(this.notBefore, Date.now() + delayMs);
@@ -173,35 +173,32 @@ class ChocoholicRacing {
     }, this.notBefore - Date.now());
   }
   evaluate() {
-    clearTimeout(this.deadzoneTimer);
-    this.deadzoneTimer = null;
     if (Date.now() < this.notBefore) return this.resumeAfter(this.notBefore - Date.now(), "Chocoholic cooldown still active.");
     const seconds = this.scheduler.secondsUntilEvent();
     if (seconds <= this.deadzoneSeconds) {
-      this.setEnabled(false);
-      console.log("[Saru] Next GATE is within " + noChocoholicQueueMinutes + " minutes. Chocoholic remains disabled.");
+      console.log("[Saru] Next GATE is within " + noChocoholicQueueMinutes + " minutes. Chocoholic will not queue another race after the current one.");
       return;
     }
     this.setEnabled(true);
-    const untilDeadzone = (seconds - this.deadzoneSeconds) * 1000;
-    this.deadzoneTimer = setTimeout(() => {
-      this.deadzoneTimer = null;
-      this.setEnabled(false);
-      console.log("[Saru] Chocoholic disabled for the GATE dead zone.");
-    }, untilDeadzone);
   }
   onMgpPayout(message) {
     if (!isMgpPayout(message)) return;
     this.setEnabled(false);
-    clearTimeout(this.deadzoneTimer);
-    this.deadzoneTimer = null;
+    if (this.finishAfterPayout) {
+      const done = this.finishAfterPayout;
+      this.finishAfterPayout = null;
+      return done();
+    }
     this.resumeAfter(20000, "Race MGP payout detected.");
+  }
+  finishForGate(done) {
+    if (!this.enabled) return done();
+    this.finishAfterPayout = done;
+    console.log("[Saru] Waiting for the current Chocoholic race payout before heading to the GATE.");
   }
   onMapChange(canQueue) {
     // The map changes during a transition; never keep racing enabled through it.
     this.setEnabled(false);
-    clearTimeout(this.deadzoneTimer);
-    this.deadzoneTimer = null;
     this.transitionPending = canQueue && FFXIV.inZoneChange;
     if (canQueue && !this.transitionPending) this.recheckAfterTransition();
   }
@@ -237,8 +234,7 @@ class BetweenGatesActivity {
   }
   stopForGate(done) {
     if (this.usesChocoholic) {
-      this.chocoholic.stop();
-      return done();
+      return this.chocoholic.finishForGate(done);
     }
     this.cuff.stop(done);
   }
@@ -247,7 +243,7 @@ class BetweenGatesActivity {
     else this.cuff.start();
   }
   onMessage(message, canQueue) {
-    if (this.usesChocoholic && canQueue) this.chocoholic.onMgpPayout(message);
+    if (this.usesChocoholic && (canQueue || this.chocoholic.finishAfterPayout)) this.chocoholic.onMgpPayout(message);
   }
   onMapChange(canQueue) {
     if (this.usesChocoholic) this.chocoholic.onMapChange(canQueue);
