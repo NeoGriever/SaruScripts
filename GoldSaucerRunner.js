@@ -197,10 +197,11 @@ class ChocoholicRacing {
     console.log("[Saru] Waiting for the current Chocoholic race payout before heading to the GATE.");
   }
   onMapChange(canQueue) {
-    // The map changes during a transition; never keep racing enabled through it.
-    this.setEnabled(false);
-    this.transitionPending = canQueue && FFXIV.inZoneChange;
-    if (canQueue && !this.transitionPending) this.recheckAfterTransition();
+    // A Chocoholic queue itself can cause a map transition. Do not stop the
+    // active race here; only an already-idle Chocoholic state is rechecked.
+    const shouldRecheck = canQueue && !this.enabled;
+    this.transitionPending = shouldRecheck && FFXIV.inZoneChange;
+    if (shouldRecheck && !this.transitionPending) this.recheckAfterTransition();
   }
   onZoneChanged(canQueue) {
     if (!this.transitionPending) return;
@@ -505,17 +506,17 @@ class Controller {
       console.log("[Saru] Transition finished. Waiting one second before activating the event NPC.");
       this.zoneTimer = setTimeout(() => this.activateEventNpc(), 1000);
     }
-    if (this.state === "airforce-return") this.returnToActivity("Back from Airforce.");
+    if (this.state === "airforce-return") {
+      this.state = "gate";
+      console.log("[Saru] Back from Airforce. Waiting for the MGP payout before resuming activity.");
+    }
     this.activity.onZoneChanged(this.state === "waiting");
   }
   onEventDone() {
     if (this.gate !== "Airforce" || this.state !== "gate") return;
     this.state = "airforce-result";
-    this.payoutWaiting = false;
-    clearTimeout(this.payoutArmTimer);
-    clearTimeout(this.payoutTimeout);
     clearTimeout(this.cuffTimer);
-    this.payoutArmTimer = this.payoutTimeout = this.cuffTimer = null;
+    this.cuffTimer = null;
     console.log("[Saru] Airforce finished. Closing the result in 2 seconds.");
     this.eventCloseTimer = setTimeout(() => {
       if (this.state !== "airforce-result") return;
@@ -559,17 +560,16 @@ class Controller {
     this.rabbit.cancel();
     this.eventNpc.cancel();
     this.scheduler.arm();
-    console.log("[Saru] Event NPC activated; arming payout detection in 3 seconds.");
+    console.log("[Saru] Event NPC activated. Waiting for MGP payout before resuming activity.");
     if (this.gate === "SliceIsRight") this.yojinbo.entered();
     if (this.gate === "Hunga") {
       console.log("[Saru] Hunga detected. Walking to Hunga position in 12 seconds.");
       this.hunga.entered();
     }
-    this.payoutArmTimer = setTimeout(() => {
-      this.payoutWaiting = true;
-      console.log("[Saru] Waiting for MGP payout.");
-    }, 3000);
-    this.payoutTimeout = setTimeout(() => this.returnToActivity("No payout detected within 13 minutes."), 13 * 60 * 1000);
+    this.payoutWaiting = true;
+    this.payoutTimeout = setTimeout(() => {
+      if (this.payoutWaiting) console.error("[Saru] No MGP payout detected within 13 minutes. GATE activity remains locked.");
+    }, 13 * 60 * 1000);
   }
   onPayout(message) {
     this.payoutWaiting = false;

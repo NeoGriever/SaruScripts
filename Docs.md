@@ -60,6 +60,19 @@ function Stop() {
 
 `Stop()` runs when Saru stops the script. Return `true` to complete the stop cleanly. A stop that returns another value or does not complete in time is terminated.
 
+## Script configuration
+
+Declare settings at script root. Saru evaluates these declarations when the script is loaded, displays them in the script's expandable **Configuration** section, and injects the selected values when the script starts.
+
+```js
+const enabled = saru.SetConfig("enabled", "Enable feature", saru.configType.checkbox, false);
+const choice = saru.SetConfig("choice", "Choice", saru.configType.combo, ["One", "Two"], 0);
+const text = saru.SetConfig("text", "Text", saru.configType.input, "Example");
+const amount = saru.SetConfig("amount", "Amount", saru.configType.number, [0, 10], 4);
+```
+
+`SetConfig` returns the selected value. Declarations must be at root level; function bodies are not run during configuration discovery.
+
 ## Event listeners
 
 Register a callback with `addEventListener(eventName, callback)`.
@@ -81,6 +94,7 @@ Use the constants in `FFEV` when possible.
 | `arrived` | `FFEV.arrived` | `() => {}` | The player reaches a position requested through `vNavMesh.MoveTo`. |
 | `time` | `FFEV.time` | `() => {}` | A timestamp registered through `Timer.At` is reached. |
 | `reach` | `FFEV.reach` | `() => {}` | A watched targetable object enters the requested radius. |
+| `mapChange` | `FFEV.onMapChange` | `() => {}` | The current map ID changes. |
 | `zoneChangeStart` | `FFEV.onZoneChangeStart` | `() => {}` | A zone transition starts. |
 | `zoneChanged` | `FFEV.onZoneChanged` | `() => {}` | A zone transition ends. |
 | `dutyEnd` | `FFEV.onDutyEnd` | `() => {}` | The player leaves a duty. |
@@ -96,10 +110,10 @@ addEventListener(FFEV.onZoneChanged, () => {
 
 ## Positions and distance
 
-A position is an object with `x`, `y`, and `z` values.
+A position is an object with `x`, `y`, and `z` values. It may also include an optional `mapId`.
 
 ```js
-const destination = { x: 12.5, y: 3.0, z: -42.75 };
+const destination = { x: 12.5, y: 3.0, z: -42.75, mapId: 144 };
 ```
 
 `curPos` is a read-only snapshot of the player position.
@@ -108,6 +122,7 @@ const destination = { x: 12.5, y: 3.0, z: -42.75 };
 console.log(curPos.x);
 console.log(curPos.y);
 console.log(curPos.z);
+console.log(curPos.mapId);
 ```
 
 `dist(a, b)` returns the three-dimensional distance between two positions.
@@ -211,10 +226,10 @@ target.Un(12345);
 
 ```js
 vNavMesh.MoveTo(12.5, 3.0, -42.75, 1.5);
-vNavMesh.MoveTo({ x: 12.5, y: 3.0, z: -42.75 }, 1.5);
+vNavMesh.MoveTo({ x: 12.5, y: 3.0, z: -42.75, mapId: 144 }, 1.5);
 ```
 
-The final argument is the arrival buffer. The `arrived` event fires after the player reaches the buffer.
+The final argument is the arrival buffer. The `arrived` event fires after the player reaches the buffer. When `mapId` is supplied, the move is rejected unless the player is on that map, and arrival cannot fire on another map.
 
 ```js
 if (!vNavMesh.IsRunning()) {
@@ -242,6 +257,29 @@ addEventListener(FFEV.dialog, () => true);
 ```
 
 Use `FFXIV.closeRideShootingResult()` to queue the close action for the visible Ride Shooting result dialog.
+
+## Chocoholic integration
+
+Chocoholic is optional. When it is loaded, Saru exposes its racing controls:
+
+```js
+chocoholic.SetNumberOfRaces(1); // clamped to 0–999
+chocoholic.Toggle(true);
+chocoholic.Toggle(false);
+```
+
+Missing Chocoholic is a harmless no-op. `GoldSaucerRunner.js` queues one race at a time. Its GATE deadzone prevents only a new queue after the race's MGP payout; it never stops an active race.
+
+## Dynamic plugin integration
+
+Use `Plugin(internalName)` for optional plugin integrations without making them Saru dependencies. Both calls return the invoked result, or `null` when unavailable; they never stop the script.
+
+```js
+Plugin("SomePlugin").IPC("SomePlugin.Command", [true, 5]);
+Plugin("Chocoholic").Reflect("Chocoholic.Chocorunner.C.Enable", []);
+```
+
+`IPC(name, arguments)` invokes a registered Dalamud IPC endpoint with up to eight primitive arguments. `Reflect(target, arguments)` resolves a public type path, then public fields/properties, and finally a public method. If the plugin is missing, Saru writes **plugin not found** to `/xllog`; if an IPC endpoint is unavailable, it writes **ipc not available**. An invalid reflection target is also logged and otherwise acts as a no-op.
 
 ## Chat and logging
 
@@ -353,3 +391,17 @@ if (source !== null && source.npc !== null) {
 ```
 
 Use `try` and `catch` around work that can fail without ending the entire script.
+
+## Changelog
+
+### 1.0.3.2
+
+- Added root-level script configuration, map-aware movement, and the `mapChange` event.
+- Added optional Chocoholic controls and the GoldSaucerRunner Chocoholic mode.
+- Added dynamic `Plugin().IPC()` and `Plugin().Reflect()` integrations.
+- Changed target activation to restore Cammy camera collision and limit an overly distant camera zoom.
+- Added managed remote-script updates and update availability indicators.
+
+### 1.0.3.1
+
+- First public release.
