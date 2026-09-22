@@ -1,3 +1,6 @@
+const useChocoholic = saru.SetConfig("useChocoholic", "Chocobo Racing instead of Cuff-a-cur", saru.configType.checkbox, false);
+const noChocoholicQueueMinutes = saru.SetConfig("noChocoholicQueueMinutes", "No Chocoholic Queue [X] Minutes before Gate", saru.configType.number, [1, 10], 5);
+
 const CONFIG = {
   cuff: { x: 24.9306, y: -5.0, z: -48.7132 }, hunga: { x: 66.96, y: -4.48, z: -24.69 },
   rabbits: [{ x: 42.6145, y: -5.0, z: -16.1596 }, { x: -11.5351, y: 3.2575, z: -73.0550 }, { x: 21.2236, y: 3.9997, z: 38.3259 }],
@@ -19,6 +22,10 @@ function formatClock(timestamp) {
   seconds %= 3600;
   const minutes = Math.floor(seconds / 60);
   return String(hours).padStart(2, "0") + ":" + String(minutes).padStart(2, "0");
+}
+
+function isMgpPayout(message) {
+  return /^Du hast [\d.,]+ MGP erhalten\.$/.test(message) || /^You obtain [\d.,]+ MGP\.$/.test(message);
 }
 
 class Movement {
@@ -118,6 +125,139 @@ class CuffACur {
       this.finishTimer = setTimeout(wait, 250);
     };
     wait();
+  }
+}
+
+class ChocoholicRacing {
+  constructor(scheduler) {
+    this.scheduler = scheduler;
+    this.enabled = false;
+    this.deadzoneTimer = null;
+    this.resumeTimer = null;
+    this.notBefore = 0;
+    this.transitionPending = false;
+  }
+  get deadzoneSeconds() { return Number(noChocoholicQueueMinutes) * 60; }
+  clearTimers() {
+    clearTimeout(this.deadzoneTimer);
+    clearTimeout(this.resumeTimer);
+    this.deadzoneTimer = this.resumeTimer = null;
+  }
+  setEnabled(value) {
+    if (this.enabled === value) return;
+    if (value) chocoholic.SetNumberOfRaces(1);
+    chocoholic.Toggle(value);
+    this.enabled = value;
+    console.log("[Saru] Chocoholic " + (value ? "enabled." : "disabled."));
+  }
+  start() { this.evaluate(); }
+  stop() {
+    this.clearTimers();
+    this.notBefore = 0;
+    this.transitionPending = false;
+    this.setEnabled(false);
+  }
+  pauseForGate() {
+    this.clearTimers();
+    this.notBefore = 0;
+    this.transitionPending = false;
+    this.setEnabled(false);
+  }
+  resumeAfter(delayMs, reason) {
+    this.notBefore = Math.max(this.notBefore, Date.now() + delayMs);
+    clearTimeout(this.resumeTimer);
+    this.resumeTimer = setTimeout(() => {
+      this.resumeTimer = null;
+      console.log("[Saru] " + reason + " Rechecking Chocoholic queue.");
+      this.evaluate();
+    }, this.notBefore - Date.now());
+  }
+  evaluate() {
+    clearTimeout(this.deadzoneTimer);
+    this.deadzoneTimer = null;
+    if (Date.now() < this.notBefore) return this.resumeAfter(this.notBefore - Date.now(), "Chocoholic cooldown still active.");
+    const seconds = this.scheduler.secondsUntilEvent();
+    if (seconds <= this.deadzoneSeconds) {
+      this.setEnabled(false);
+      console.log("[Saru] Next GATE is within " + noChocoholicQueueMinutes + " minutes. Chocoholic remains disabled.");
+      return;
+    }
+    this.setEnabled(true);
+    const untilDeadzone = (seconds - this.deadzoneSeconds) * 1000;
+    this.deadzoneTimer = setTimeout(() => {
+      this.deadzoneTimer = null;
+      this.setEnabled(false);
+      console.log("[Saru] Chocoholic disabled for the GATE dead zone.");
+    }, untilDeadzone);
+  }
+  onMgpPayout(message) {
+    if (!isMgpPayout(message)) return;
+    this.setEnabled(false);
+    clearTimeout(this.deadzoneTimer);
+    this.deadzoneTimer = null;
+    this.resumeAfter(20000, "Race MGP payout detected.");
+  }
+  onMapChange(canQueue) {
+    // The map changes during a transition; never keep racing enabled through it.
+    this.setEnabled(false);
+    clearTimeout(this.deadzoneTimer);
+    this.deadzoneTimer = null;
+    this.transitionPending = canQueue && FFXIV.inZoneChange;
+    if (canQueue && !this.transitionPending) this.recheckAfterTransition();
+  }
+  onZoneChanged(canQueue) {
+    if (!this.transitionPending) return;
+    this.transitionPending = false;
+    if (canQueue) this.recheckAfterTransition();
+  }
+  recheckAfterTransition() {
+    const remainingCooldown = this.notBefore - Date.now();
+    if (remainingCooldown > 0) return this.resumeAfter(remainingCooldown, "Chocoholic cooldown still active.");
+    console.log("[Saru] Map transition finished. Checking Chocoholic queue now.");
+    this.evaluate();
+  }
+}
+
+class BetweenGatesActivity {
+  constructor(movement, scheduler) {
+    this.cuff = new CuffACur(movement);
+    this.chocoholic = new ChocoholicRacing(scheduler);
+  }
+  get usesChocoholic() { return useChocoholic; }
+  start(secondsUntilGate) {
+    if (this.usesChocoholic) {
+      this.cuff.stop();
+      this.chocoholic.start();
+    } else if (secondsUntilGate > 120) {
+      this.cuff.start();
+    }
+  }
+  pauseForGate() {
+    if (this.usesChocoholic) this.chocoholic.pauseForGate();
+  }
+  stopForGate(done) {
+    if (this.usesChocoholic) {
+      this.chocoholic.stop();
+      return done();
+    }
+    this.cuff.stop(done);
+  }
+  resumeAfterGate(delayMs, reason) {
+    if (this.usesChocoholic) this.chocoholic.resumeAfter(delayMs, reason);
+    else this.cuff.start();
+  }
+  onMessage(message, canQueue) {
+    if (this.usesChocoholic && canQueue) this.chocoholic.onMgpPayout(message);
+  }
+  onMapChange(canQueue) {
+    if (this.usesChocoholic) this.chocoholic.onMapChange(canQueue);
+  }
+  onZoneChanged(canQueue) {
+    if (this.usesChocoholic) this.chocoholic.onZoneChanged(canQueue);
+  }
+  stop() {
+    this.chocoholic.stop();
+    this.cuff.stop();
   }
 }
 
@@ -224,7 +364,7 @@ class Controller {
   constructor() {
     this.movement = new Movement();
     this.scheduler = new Scheduler();
-    this.cuff = new CuffACur(this.movement);
+    this.activity = new BetweenGatesActivity(this.movement, this.scheduler);
     this.rabbit = new Rabbit(this.movement);
     this.eventNpc = new Activator(CONFIG.eventIds);
     this.yojinbo = new Yojinbo(this.movement);
@@ -245,9 +385,12 @@ class Controller {
   start() {
     const seconds = this.scheduler.secondsUntilEvent();
     this.scheduler.arm();
-    if (seconds > 120) {
+    if (useChocoholic) {
+      console.log("[Saru] Chocoholic mode selected.");
+      this.activity.start(seconds);
+    } else if (seconds > 120) {
       console.log("[Saru] Enough time before the next GATE. Starting Cuff-a-Cur.");
-      this.cuff.start();
+      this.activity.start(seconds);
     } else {
       console.log("[Saru] Next GATE is within two minutes. Waiting for announcement.");
     }
@@ -259,7 +402,7 @@ class Controller {
     this.eventNpc.cancel();
     this.yojinbo.reset();
     this.hunga.reset();
-    this.cuff.stop();
+    this.activity.stop();
     return true;
   }
   clearTimers() {
@@ -276,24 +419,26 @@ class Controller {
   onTime() {
     this.scheduler.triggered();
     if (this.state !== "waiting") return this.scheduler.arm();
+    this.activity.pauseForGate();
     this.watching = true;
     console.log("[Saru] Announcement window opened. Waiting two minutes for a supported GATE.");
     this.watchTimer = setTimeout(() => {
       if (!this.watching) return;
       this.watching = false;
-      console.log("[Saru] No supported GATE announced during the two-minute window. Starting Cuff-a-Cur.");
-      this.cuff.start();
       this.scheduler.arm();
+      if (useChocoholic) {
+        console.log("[Saru] No supported GATE announced. Rechecking Chocoholic in 20 seconds.");
+        this.activity.resumeAfterGate(20000, "Announcement window finished.");
+      } else {
+        console.log("[Saru] No supported GATE announced during the two-minute window. Starting Cuff-a-Cur.");
+        this.activity.resumeAfterGate(0, "Announcement window finished.");
+      }
     }, 120000);
   }
   onMessage(message) {
+    this.activity.onMessage(message, this.state === "waiting");
     this.yojinbo.onMessage(message);
-    if (
-      this.payoutWaiting && (
-        /^Du hast [\d.,]+ MGP erhalten\.$/.test(message) ||
-        /^You obtain [\d.,]+ MGP\.$/.test(message)
-      )
-    ) return this.onPayout(message);
+    if (this.payoutWaiting && isMgpPayout(message)) return this.onPayout(message);
 
     if (
       !this.watching || (
@@ -325,20 +470,20 @@ class Controller {
     this.travel();
   }
   travel() {
-    this.state = "finishing-cuff";
-    this.cuff.stop(() => this.beginTravel());
+    this.state = "preparing-gate";
+    this.activity.stopForGate(() => this.beginTravel());
   }
   beginTravel() {
-    if (this.state !== "finishing-cuff") return;
+    if (this.state !== "preparing-gate") return;
     this.state = "travelling";
-    console.log("[Saru] Cuff-a-Cur is ready. Heading to the GATE.");
+    console.log("[Saru] Between-GATE activity stopped. Heading to the GATE.");
     if (this.gate === "SliceIsRight") this.yojinbo.begin();
     if (this.gate === "Hunga") this.hunga.begin();
     if (this.eventNpc.nearest(10) !== null) {
       console.log("[Saru] Event NPC is already nearby. Entering directly.");
       return this.activateEventNpc();
     }
-    this.rabbit.start(() => this.waitForZoneTransition(), () => this.returnToCuff("Rabbit activation failed."));
+    this.rabbit.start(() => this.waitForZoneTransition(), () => this.returnToActivity("Rabbit activation failed."));
   }
   waitForZoneTransition() {
     this.state = "transition";
@@ -364,7 +509,8 @@ class Controller {
       console.log("[Saru] Transition finished. Waiting one second before activating the event NPC.");
       this.zoneTimer = setTimeout(() => this.activateEventNpc(), 1000);
     }
-    if (this.state === "airforce-return") this.returnToCuff("Back from Airforce.");
+    if (this.state === "airforce-return") this.returnToActivity("Back from Airforce.");
+    this.activity.onZoneChanged(this.state === "waiting");
   }
   onEventDone() {
     if (this.gate !== "Airforce" || this.state !== "gate") return;
@@ -395,7 +541,7 @@ class Controller {
     this.joinTimer = setTimeout(() => {
       if (this.state !== "joining") return;
       if (FFXIV.selectYesnoOpen) return this.confirmEventJoin();
-      if (this.joinAttempts >= 10) return this.returnToCuff("Event join confirmation did not appear.");
+      if (this.joinAttempts >= 10) return this.returnToActivity("Event join confirmation did not appear.");
       console.log("[Saru] No event confirmation yet. Trying again.");
       this.tryEventNpcJoin();
     }, 2000);
@@ -427,18 +573,19 @@ class Controller {
       this.payoutWaiting = true;
       console.log("[Saru] Waiting for MGP payout.");
     }, 3000);
-    this.payoutTimeout = setTimeout(() => this.returnToCuff("No payout detected within 13 minutes."), 13 * 60 * 1000);
+    this.payoutTimeout = setTimeout(() => this.returnToActivity("No payout detected within 13 minutes."), 13 * 60 * 1000);
   }
   onPayout(message) {
     this.payoutWaiting = false;
     clearTimeout(this.payoutArmTimer);
     clearTimeout(this.payoutTimeout);
     this.payoutArmTimer = this.payoutTimeout = null;
-    console.log("[Saru] Payout detected: " + message + ". Starting Cuff-a-Cur in 4 seconds.");
+    const delay = useChocoholic ? 20000 : 4000;
+    console.log("[Saru] Payout detected: " + message + ". Resuming " + (useChocoholic ? "Chocoholic" : "Cuff-a-Cur") + " in " + (delay / 1000) + " seconds.");
     clearTimeout(this.cuffTimer);
-    this.cuffTimer = setTimeout(() => this.returnToCuff("Payout delay finished."), 4000);
+    this.cuffTimer = setTimeout(() => this.returnToActivity("Payout delay finished."), delay);
   }
-  returnToCuff(reason) {
+  returnToActivity(reason) {
     clearTimeout(this.zoneTimer);
     this.zoneTimer = null;
     clearTimeout(this.payoutArmTimer);
@@ -455,13 +602,19 @@ class Controller {
     this.state = "waiting";
     this.gate = null;
     if (this.scheduler.watchAt === null) this.scheduler.arm();
-    console.log("[Saru] " + reason + " Starting Cuff-a-Cur.");
-    this.cuff.start();
+    console.log("[Saru] " + reason + " Resuming " + (useChocoholic ? "Chocoholic" : "Cuff-a-Cur") + ".");
+    this.activity.start(this.scheduler.secondsUntilEvent());
+  }
+
+  onMapChange() {
+    this.activity.onMapChange(this.state === "waiting");
   }
 }
 
 const Saru = new Controller();
-function Start() { Saru.start(); }
+function Start() {
+  Saru.start();
+}
 function Stop() { return Saru.stop(); }
 addEventListener(FFEV.message, message => Saru.onMessage(message));
 addEventListener(FFEV.time, () => Saru.onTime());
@@ -470,3 +623,4 @@ addEventListener(FFEV.dialog, () => Saru.onDialog());
 addEventListener(FFEV.onZoneChangeStart, () => Saru.onZoneChangeStart());
 addEventListener(FFEV.onZoneChanged, () => Saru.onZoneChanged());
 addEventListener(FFEV.onEventDone, () => Saru.onEventDone());
+addEventListener(FFEV.onMapChange, () => Saru.onMapChange());
