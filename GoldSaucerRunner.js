@@ -1,5 +1,7 @@
-const useChocoholic = saru.SetConfig("useChocoholic", "Chocobo Racing instead of Cuff-a-cur", saru.configType.checkbox, false);
+const betweenGatesAction = saru.SetConfig("betweenGatesAction", "Between GATEs action", saru.configType.combo, ["Do nothing", "Cuff-a-cur", "Chocobo racing"], 1);
 const noChocoholicQueueMinutes = saru.SetConfig("noChocoholicQueueMinutes", "No Chocoholic Queue [X] Minutes before Gate", saru.configType.number, [1, 10], 5);
+
+const BETWEEN_GATES_ACTION = { nothing: 0, cuff: 1, chocoholic: 2 };
 
 const CONFIG = {
   cuff: { x: 24.9306, y: -5.0, z: -48.7132 }, hunga: { x: 66.96, y: -4.48, z: -24.69 },
@@ -221,12 +223,16 @@ class BetweenGatesActivity {
     this.cuff = new CuffACur(movement);
     this.chocoholic = new ChocoholicRacing(scheduler);
   }
-  get usesChocoholic() { return useChocoholic; }
+  get usesChocoholic() { return betweenGatesAction === BETWEEN_GATES_ACTION.chocoholic; }
+  get usesCuff() { return betweenGatesAction === BETWEEN_GATES_ACTION.cuff; }
+  get name() {
+    return this.usesChocoholic ? "Chocoholic" : this.usesCuff ? "Cuff-a-Cur" : "no between-GATE activity";
+  }
   start(secondsUntilGate) {
     if (this.usesChocoholic) {
       this.cuff.stop();
       this.chocoholic.start();
-    } else if (secondsUntilGate > 120) {
+    } else if (this.usesCuff && secondsUntilGate > 120) {
       this.cuff.start();
     }
   }
@@ -237,11 +243,12 @@ class BetweenGatesActivity {
     if (this.usesChocoholic) {
       return this.chocoholic.finishForGate(done);
     }
-    this.cuff.stop(done);
+    if (this.usesCuff) return this.cuff.stop(done);
+    done();
   }
   resumeAfterGate(delayMs, reason) {
     if (this.usesChocoholic) this.chocoholic.resumeAfter(delayMs, reason);
-    else this.cuff.start();
+    else if (this.usesCuff) this.cuff.start();
   }
   onMessage(message, canQueue) {
     if (this.usesChocoholic && (canQueue || this.chocoholic.finishAfterPayout)) this.chocoholic.onMgpPayout(message);
@@ -253,8 +260,8 @@ class BetweenGatesActivity {
     if (this.usesChocoholic) this.chocoholic.onZoneChanged(canQueue);
   }
   stop() {
-    this.chocoholic.stop();
-    this.cuff.stop();
+    if (this.usesChocoholic) this.chocoholic.stop();
+    if (this.usesCuff) this.cuff.stop();
   }
 }
 
@@ -382,14 +389,16 @@ class Controller {
   start() {
     const seconds = this.scheduler.secondsUntilEvent();
     this.scheduler.arm();
-    if (useChocoholic) {
+    if (this.activity.usesChocoholic) {
       console.log("[Saru] Chocoholic mode selected.");
       this.activity.start(seconds);
-    } else if (seconds > 120) {
+    } else if (this.activity.usesCuff && seconds > 120) {
       console.log("[Saru] Enough time before the next GATE. Starting Cuff-a-Cur.");
       this.activity.start(seconds);
-    } else {
+    } else if (this.activity.usesCuff) {
       console.log("[Saru] Next GATE is within two minutes. Waiting for announcement.");
+    } else {
+      console.log("[Saru] No between-GATE activity selected. Waiting for announcement.");
     }
   }
   stop() {
@@ -423,12 +432,14 @@ class Controller {
       if (!this.watching) return;
       this.watching = false;
       this.scheduler.arm();
-      if (useChocoholic) {
+      if (this.activity.usesChocoholic) {
         console.log("[Saru] No supported GATE announced. Rechecking Chocoholic in 20 seconds.");
         this.activity.resumeAfterGate(20000, "Announcement window finished.");
-      } else {
+      } else if (this.activity.usesCuff) {
         console.log("[Saru] No supported GATE announced during the two-minute window. Starting Cuff-a-Cur.");
         this.activity.resumeAfterGate(0, "Announcement window finished.");
+      } else {
+        console.log("[Saru] No supported GATE announced during the two-minute window. Continuing to wait.");
       }
     }, 120000);
   }
@@ -576,9 +587,10 @@ class Controller {
     clearTimeout(this.payoutArmTimer);
     clearTimeout(this.payoutTimeout);
     this.payoutArmTimer = this.payoutTimeout = null;
-    const delay = useChocoholic ? 20000 : 4000;
-    console.log("[Saru] Payout detected: " + message + ". Resuming " + (useChocoholic ? "Chocoholic" : "Cuff-a-Cur") + " in " + (delay / 1000) + " seconds.");
+    const delay = this.activity.usesChocoholic ? 20000 : this.activity.usesCuff ? 4000 : 0;
+    console.log("[Saru] Payout detected: " + message + ". Resuming " + this.activity.name + " in " + (delay / 1000) + " seconds.");
     clearTimeout(this.cuffTimer);
+    if (delay === 0) return this.returnToActivity("Payout detected.");
     this.cuffTimer = setTimeout(() => this.returnToActivity("Payout delay finished."), delay);
   }
   returnToActivity(reason) {
@@ -598,7 +610,7 @@ class Controller {
     this.state = "waiting";
     this.gate = null;
     if (this.scheduler.watchAt === null) this.scheduler.arm();
-    console.log("[Saru] " + reason + " Resuming " + (useChocoholic ? "Chocoholic" : "Cuff-a-Cur") + ".");
+    console.log("[Saru] " + reason + " Resuming " + this.activity.name + ".");
     this.activity.start(this.scheduler.secondsUntilEvent());
   }
 
