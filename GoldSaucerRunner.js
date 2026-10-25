@@ -467,7 +467,8 @@ class Controller {
       message.includes("Yojinbo") ||
       message.includes("The Slice Is Right")
     ) ? "SliceIsRight" : (
-      message.includes("Hungaaa")
+      message.includes("Hungaaa") ||
+      message.includes("Any Way the Wind Blows")
     ) ? "Hunga" : null;
 
     if (!gate) return;
