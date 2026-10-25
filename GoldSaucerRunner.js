@@ -27,7 +27,8 @@ function formatClock(timestamp) {
 }
 
 function isMgpPayout(message) {
-  return /^Du hast [\d.,]+ MGP erhalten\.$/.test(message) || /^You obtain [\d.,]+ MGP\.$/.test(message);
+  var variant1 = /^Du hast [\d.,]+ .*?MGP erhalten\.$/.test(message) || /^You obtain [\d.,]+ .*?MGP\.$/.test(message)
+  return variant1;
 }
 
 class Movement {
